@@ -1,12 +1,10 @@
 import pyzed.sl as sl
 import cv2
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 import csv
 import os
-import threading
-from collections import defaultdict
 
 # --- Global variables for drawing functionality ---
 defined_spaces_contours = []
@@ -64,230 +62,6 @@ def mouse_callback(event, x, y, flags, param):
         else:
             print("Warning: Freehand stroke too short, not creating an area.")
         current_drawing_points = [] # Clear points for the next stroke
-
-def save_checkpoint_data(person_event_log, log_folder, checkpoint_number):
-    """Save current CSV data with checkpoint number"""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_file_name = os.path.join(log_folder, f"checkpoint_{checkpoint_number:03d}_{timestamp}.csv")
-    
-    if person_event_log:
-        # Sort the log
-        sorted_log = sorted(person_event_log, key=lambda x: (x['ID'], x.get('Space ID', ''), x['Entry Time']))
-        
-        # Save to CSV
-        with open(csv_file_name, 'w', newline='') as csvfile:
-            fieldnames = ["ID", "Entry Time", "Exit Time", "Space ID", "Total Lingering Time (s)"]
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            
-            writer.writeheader()
-            for row in sorted_log:
-                writer.writerow(row)
-        
-        print(f"\n--- Checkpoint {checkpoint_number} CSV saved to: {csv_file_name} ---")
-        return csv_file_name
-    else:
-        print(f"\n--- Checkpoint {checkpoint_number}: No data to save in CSV ---")
-        return None
-
-def video_recording_loop(zed, obj_runtime_param, objects, image_mat, 
-                         defined_spaces_contours, space_names, 
-                         person_entry_times, person_last_seen_times, 
-                         person_space_lingering_times, person_event_log,
-                         log_folder):
-    """Main video recording loop with checkpoint management"""
-    
-    # Get frame dimensions
-    zed.retrieve_image(image_mat, sl.VIEW.LEFT)
-    test_image = image_mat.get_data()
-    test_image = cv2.cvtColor(test_image, cv2.COLOR_RGBA2BGR)
-    frame_height, frame_width = test_image.shape[:2]
-    
-    # Video recording settings
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    output_fps = 20.0
-    
-    # Checkpoint timing
-    CHECKPOINT_INTERVAL = 30 * 60  # 30 minutes in seconds
-    start_time = time.time()
-    last_checkpoint_time = start_time
-    checkpoint_number = 1
-    
-    # Current video writer
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    current_video_path = os.path.join(log_folder, f"segment_{checkpoint_number:03d}_{timestamp}.mp4")
-    video_writer = cv2.VideoWriter(current_video_path, fourcc, output_fps, (frame_width, frame_height))
-    
-    if not video_writer.isOpened():
-        print(f"Error: Could not open video writer for {current_video_path}")
-        return
-    
-    print(f"\nLive tracking started. Recording to: {current_video_path}")
-    print(f"Checkpoint interval: 30 minutes")
-    print("Press 'q' to quit.")
-    
-    try:
-        while True:
-            current_time = time.time()
-            
-            # Check if it's time for a checkpoint
-            if current_time - last_checkpoint_time >= CHECKPOINT_INTERVAL:
-                # Save current video segment
-                video_writer.release()
-                print(f"\n=== Checkpoint {checkpoint_number} reached ===")
-                print(f"Video segment saved: {current_video_path}")
-                
-                # Save CSV checkpoint
-                save_checkpoint_data(person_event_log, log_folder, checkpoint_number)
-                
-                # Start new video segment
-                checkpoint_number += 1
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                current_video_path = os.path.join(log_folder, f"segment_{checkpoint_number:03d}_{timestamp}.mp4")
-                video_writer = cv2.VideoWriter(current_video_path, fourcc, output_fps, (frame_width, frame_height))
-                
-                if not video_writer.isOpened():
-                    print(f"Error: Could not open new video writer for {current_video_path}")
-                    break
-                
-                print(f"New video segment started: {current_video_path}")
-                last_checkpoint_time = current_time
-            
-            # Process frame
-            if zed.grab() == sl.ERROR_CODE.SUCCESS:
-                zed.retrieve_image(image_mat, sl.VIEW.LEFT)
-                image = image_mat.get_data()
-                image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
-
-                zed.retrieve_objects(objects, obj_runtime_param)
-
-                current_datetime = datetime.now()
-                
-                current_zed_ids = {obj.id for obj in objects.object_list if obj.label == sl.OBJECT_CLASS.PERSON}
-                current_person_in_spaces = {pid: set() for pid in current_zed_ids}
-
-                # --- Overlay defined spaces on the live feed ---
-                for i, contour in enumerate(defined_spaces_contours):
-                    if contour.size > 0 and contour.shape[0] >= 1 and contour.shape[1] == 2:
-                        cv2.polylines(image, [contour.reshape((-1, 1, 2))], True, (255, 0, 0), 2) # Blue lines for defined spaces
-                        M = cv2.moments(contour)
-                        if M["m00"] != 0:
-                            cX = int(M["m10"] / M["m00"])
-                            cY = int(M["m01"] / M["m00"])
-                            cv2.putText(image, space_names[i], (cX - 15, cY + 10), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-
-                for obj in objects.object_list:
-                    if obj.label == sl.OBJECT_CLASS.PERSON:
-                        person_id = obj.id
-                        
-                        if person_id not in person_entry_times:
-                            person_entry_times[person_id] = current_datetime
-                            print(f"New person ID {person_id} detected in scene.")
-                        person_last_seen_times[person_id] = current_datetime
-                        
-                        if obj.bounding_box_2d is not None and len(obj.bounding_box_2d) > 0:
-                            x_coords = [p[0] for p in obj.bounding_box_2d]
-                            y_coords = [p[1] for p in obj.bounding_box_2d]
-                            
-                            x1 = int(min(x_coords))
-                            y1 = int(min(y_coords))
-                            x2 = int(max(x_coords))
-                            y2 = int(max(y_coords))
-                            
-                            elapsed = (current_datetime - person_entry_times[person_id]).total_seconds()
-                            
-                            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                            
-                            text = f"ID {person_id}: {elapsed:.1f}s"
-                            font = cv2.FONT_HERSHEY_SIMPLEX
-                            font_scale = 1.5
-                            font_thickness = 3
-                            
-                            (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, font_thickness)
-                            text_x = x1
-                            text_y = y1 - 10
-                            padding = 5
-                            rect_x1 = text_x - padding
-                            rect_y1 = text_y - text_height - padding
-                            rect_x2 = text_x + text_width + padding
-                            rect_y2 = text_y + baseline + padding
-                            
-                            rect_x1 = max(0, rect_x1)
-                            rect_y1 = max(0, rect_y1)
-                            rect_x2 = min(image.shape[1], rect_x2)
-                            rect_y2 = min(image.shape[0], rect_y2)
-
-                            cv2.rectangle(image, (rect_x1, rect_y1), (rect_x2, rect_y2), (0, 0, 0), -1)
-                            cv2.putText(image, text, (text_x, text_y), font, font_scale, (0, 0, 255), font_thickness)
-
-                            person_center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
-
-                            if person_id not in person_space_lingering_times:
-                                person_space_lingering_times[person_id] = {}
-
-                            for i, contour in enumerate(defined_spaces_contours):
-                                space_name = space_names[i]
-                                if cv2.pointPolygonTest(contour, person_center, False) >= 0:
-                                    current_person_in_spaces[person_id].add(space_name)
-
-                                    if space_name not in person_space_lingering_times[person_id]:
-                                        person_space_lingering_times[person_id][space_name] = {
-                                            'entry_time': current_datetime,
-                                            'last_seen': current_datetime
-                                        }
-                                        print(f"Person {person_id} entered Space {space_name}.")
-                                    else:
-                                        person_space_lingering_times[person_id][space_name]['last_seen'] = current_datetime
-                                        
-                for pid, spaces_data in list(person_space_lingering_times.items()):
-                    for space_name, times in list(spaces_data.items()):
-                        
-                        if pid not in current_zed_ids or space_name not in current_person_in_spaces.get(pid, set()):
-                            
-                            time_since_last_seen_in_space = (current_datetime - times['last_seen']).total_seconds()
-
-                            if time_since_last_seen_in_space > 2.0:
-                                total_time_in_space = (times['last_seen'] - times['entry_time']).total_seconds()
-                                if total_time_in_space >= 1.0:
-                                    print(f"Person {pid} exited Space {space_name} after {total_time_in_space:.1f} seconds.")
-                                    person_event_log.append({
-                                        "ID": pid,
-                                        "Entry Time": times['entry_time'].strftime("%Y-%m-%d %H:%M:%S"),
-                                        "Exit Time": times['last_seen'].strftime("%Y-%m-%d %H:%M:%S"),
-                                        "Space ID": space_name,
-                                        "Total Lingering Time (s)": f"{total_time_in_space:.1f}"
-                                    })
-                                del person_space_lingering_times[pid][space_name]
-                    
-                    if pid not in current_zed_ids:
-                        if pid in person_entry_times:
-                            del person_entry_times[pid]
-                        if pid in person_last_seen_times:
-                            del person_last_seen_times[pid]
-                        if pid in person_space_lingering_times and not person_space_lingering_times[pid]:
-                            del person_space_lingering_times[pid]
-
-                # Add checkpoint timer display
-                time_until_next_checkpoint = CHECKPOINT_INTERVAL - (current_time - last_checkpoint_time)
-                minutes_left = int(time_until_next_checkpoint // 60)
-                seconds_left = int(time_until_next_checkpoint % 60)
-                timer_text = f"Next checkpoint: {minutes_left:02d}:{seconds_left:02d} | Segment: {checkpoint_number}"
-                cv2.putText(image, timer_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-
-                cv2.imshow("Human Tracking", image)
-                video_writer.write(image)
-                
-                if cv2.waitKey(10) & 0xFF == ord('q'):
-                    # Save final checkpoint before quitting
-                    video_writer.release()
-                    print(f"\nFinal video segment saved: {current_video_path}")
-                    save_checkpoint_data(person_event_log, log_folder, checkpoint_number)
-                    break
-
-    finally:
-        # Ensure video writer is released
-        if video_writer.isOpened():
-            video_writer.release()
-            print(f"Video saved to: {current_video_path}")
 
 def main():
     global defined_spaces_contours, current_drawing_points, drawing_mode, drawing_image_display
@@ -351,12 +125,11 @@ def main():
     person_last_seen_times = {}
     person_event_log = []
 
-    # Create log folder with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_folder = os.path.join("zed_logs", f"session_{timestamp}")
+    log_folder = "zed_logs"
     os.makedirs(log_folder, exist_ok=True)
-    
-    print(f"\nLog folder created: {log_folder}")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_video_path = os.path.join(log_folder, f"log_{timestamp}.mp4")
+    csv_file_name = os.path.join(log_folder, f"log_{timestamp}.csv")
 
     # --- Initial frame grab for drawing boundaries ---
     if zed.grab() == sl.ERROR_CODE.SUCCESS:
@@ -367,6 +140,17 @@ def main():
         frame_height = drawing_image_display.shape[0]
     else:
         print("Failed to grab initial frame for boundary drawing. Exiting.")
+        zed.close()
+        return
+
+    # --- VIDEO RECORDING SETUP ---
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    output_fps = 20.0
+    video_writer = cv2.VideoWriter(output_video_path, fourcc, output_fps, (frame_width, frame_height))
+
+    if not video_writer.isOpened():
+        print(f"Error: Could not open video writer for {output_video_path}")
+        print("Please check codec support or file path.")
         zed.close()
         return
 
@@ -415,7 +199,7 @@ def main():
                  print("No areas were defined. Starting tracking without any designated areas.")
             
             drawing_mode = False
-            print("Finished drawing. Starting live human tracking with 30-minute checkpoints.")
+            print("Finished drawing. Starting live human tracking.")
 
         elif key == ord('c'): # 'c' key to clear all areas and restart drawing
             defined_spaces_contours = []
@@ -433,53 +217,173 @@ def main():
         
     cv2.setMouseCallback("Human Tracking", lambda *args: None) # Disable mouse callback for drawing
 
-    # Start the main recording loop with checkpoint management
-    video_recording_loop(zed, obj_runtime_param, objects, image_mat,
-                        defined_spaces_contours, space_names,
-                        person_entry_times, person_last_seen_times,
-                        person_space_lingering_times, person_event_log,
-                        log_folder)
+    print(f"\nLive tracking started. Recording video to: {output_video_path}")
+    print(f"CSV log will be saved to: {csv_file_name} upon exit.")
+    print("Press 'q' to quit.")
 
-    # Cleanup
-    print("\nDisabling object detection...")
-    zed.disable_object_detection()
-    print("Disabling positional tracking...")
-    zed.disable_positional_tracking()
-    print("Closing camera...")
-    zed.close()
-    
-    cv2.destroyAllWindows()
-    
-    # Final save of any lingering data
-    current_time = datetime.now()
-    for pid, spaces_data in list(person_space_lingering_times.items()):
-        for space_name, times in list(spaces_data.items()):
-            total_time_in_space = (current_time - times['entry_time']).total_seconds()
-            if total_time_in_space >= 1.0:
-                print(f"Person {pid} (program exit) was in Space {space_name} for {total_time_in_space:.1f} seconds.")
-                person_event_log.append({
-                    "ID": pid,
-                    "Entry Time": times['entry_time'].strftime("%Y-%m-%d %H:%M:%S"),
-                    "Exit Time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "Space ID": space_name,
-                    "Total Lingering Time (s)": f"{total_time_in_space:.1f}"
-                })
+    try:
+        while True:
+            if zed.grab() == sl.ERROR_CODE.SUCCESS:
+                zed.retrieve_image(image_mat, sl.VIEW.LEFT)
+                image = image_mat.get_data()
+                image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
 
-    # Final CSV save
-    if person_event_log:
-        sorted_log = sorted(person_event_log, key=lambda x: (x['ID'], x.get('Space ID', ''), x['Entry Time']))
+                zed.retrieve_objects(objects, obj_runtime_param)
+
+                current_time = datetime.now()
+                
+                current_zed_ids = {obj.id for obj in objects.object_list if obj.label == sl.OBJECT_CLASS.PERSON}
+                current_person_in_spaces = {pid: set() for pid in current_zed_ids}
+
+                # --- Overlay defined spaces on the live feed ---
+                for i, contour in enumerate(defined_spaces_contours):
+                    if contour.size > 0 and contour.shape[0] >= 1 and contour.shape[1] == 2:
+                        cv2.polylines(image, [contour.reshape((-1, 1, 2))], True, (255, 0, 0), 2) # Blue lines for defined spaces
+                        M = cv2.moments(contour)
+                        if M["m00"] != 0:
+                            cX = int(M["m10"] / M["m00"])
+                            cY = int(M["m01"] / M["m00"])
+                            cv2.putText(image, space_names[i], (cX - 15, cY + 10), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+                for obj in objects.object_list:
+                    if obj.label == sl.OBJECT_CLASS.PERSON:
+                        person_id = obj.id
+                        
+                        if person_id not in person_entry_times:
+                            person_entry_times[person_id] = current_time
+                            print(f"New person ID {person_id} detected in scene.")
+                        person_last_seen_times[person_id] = current_time
+                        
+                        if obj.bounding_box_2d is not None and len(obj.bounding_box_2d) > 0:
+                            x_coords = [p[0] for p in obj.bounding_box_2d]
+                            y_coords = [p[1] for p in obj.bounding_box_2d]
+                            
+                            x1 = int(min(x_coords))
+                            y1 = int(min(y_coords))
+                            x2 = int(max(x_coords))
+                            y2 = int(max(y_coords))
+                            
+                            elapsed = (current_time - person_entry_times[person_id]).total_seconds()
+                            
+                            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            
+                            text = f"ID {person_id}: {elapsed:.1f}s"
+                            font = cv2.FONT_HERSHEY_SIMPLEX
+                            font_scale = 1.5
+                            font_thickness = 3
+                            
+                            (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, font_thickness)
+                            text_x = x1
+                            text_y = y1 - 10
+                            padding = 5
+                            rect_x1 = text_x - padding
+                            rect_y1 = text_y - text_height - padding
+                            rect_x2 = text_x + text_width + padding
+                            rect_y2 = text_y + baseline + padding
+                            
+                            rect_x1 = max(0, rect_x1)
+                            rect_y1 = max(0, rect_y1)
+                            rect_x2 = min(image.shape[1], rect_x2)
+                            rect_y2 = min(image.shape[0], rect_y2)
+
+                            cv2.rectangle(image, (rect_x1, rect_y1), (rect_x2, rect_y2), (0, 0, 0), -1)
+                            cv2.putText(image, text, (text_x, text_y), font, font_scale, (0, 0, 255), font_thickness)
+
+                            person_center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
+
+                            if person_id not in person_space_lingering_times:
+                                person_space_lingering_times[person_id] = {}
+
+                            for i, contour in enumerate(defined_spaces_contours):
+                                space_name = space_names[i]
+                                if cv2.pointPolygonTest(contour, person_center, False) >= 0:
+                                    current_person_in_spaces[person_id].add(space_name)
+
+                                    if space_name not in person_space_lingering_times[person_id]:
+                                        person_space_lingering_times[person_id][space_name] = {
+                                            'entry_time': current_time,
+                                            'last_seen': current_time
+                                        }
+                                        print(f"Person {person_id} entered Space {space_name}.")
+                                    else:
+                                        person_space_lingering_times[person_id][space_name]['last_seen'] = current_time
+                                        
+                for pid, spaces_data in list(person_space_lingering_times.items()):
+                    for space_name, times in list(spaces_data.items()):
+                        
+                        if pid not in current_zed_ids or space_name not in current_person_in_spaces.get(pid, set()):
+                            
+                            time_since_last_seen_in_space = (current_time - times['last_seen']).total_seconds()
+
+                            if time_since_last_seen_in_space > 2.0:
+                                total_time_in_space = (times['last_seen'] - times['entry_time']).total_seconds()
+                                if total_time_in_space >= 1.0:
+                                    print(f"Person {pid} exited Space {space_name} after {total_time_in_space:.1f} seconds.")
+                                    person_event_log.append({
+                                        "ID": pid,
+                                        "Entry Time": times['entry_time'].strftime("%Y-%m-%d %H:%M:%S"),
+                                        "Exit Time": times['last_seen'].strftime("%Y-%m-%d %H:%M:%S"),
+                                        "Space ID": space_name,
+                                        "Total Lingering Time (s)": f"{total_time_in_space:.1f}"
+                                    })
+                                del person_space_lingering_times[pid][space_name]
+                    
+                    if pid not in current_zed_ids:
+                        if pid in person_entry_times:
+                            del person_entry_times[pid]
+                        if pid in person_last_seen_times:
+                            del person_last_seen_times[pid]
+                        if not person_space_lingering_times[pid]:
+                            del person_space_lingering_times[pid]
+
+                cv2.imshow("Human Tracking", image)
+                video_writer.write(image)
+                
+                if cv2.waitKey(10) & 0xFF == ord('q'):
+                    break
+
+    finally:
+        print("\nExiting application...")
+        print("Disabling object detection...")
+        zed.disable_object_detection()
+        print("Disabling positional tracking...")
+        zed.disable_positional_tracking()
+        print("Closing camera...")
+        zed.close()
         
-        final_csv_path = os.path.join(log_folder, f"complete_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-        with open(final_csv_path, 'w', newline='') as csvfile:
-            fieldnames = ["ID", "Entry Time", "Exit Time", "Space ID", "Total Lingering Time (s)"]
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            
-            writer.writeheader()
-            for row in sorted_log:
-                writer.writerow(row)
-        print(f"\nComplete tracking data saved to: {final_csv_path}")
-    else:
-        print("\nNo person events to log to CSV.")
+        cv2.destroyAllWindows()
+        
+        if video_writer.isOpened():
+            video_writer.release()
+            print(f"Video saved to: {output_video_path}")
+
+        current_time = datetime.now()
+        for pid, spaces_data in list(person_space_lingering_times.items()):
+            for space_name, times in list(spaces_data.items()):
+                total_time_in_space = (current_time - times['entry_time']).total_seconds()
+                if total_time_in_space >= 1.0:
+                    print(f"Person {pid} (program exit) was in Space {space_name} for {total_time_in_space:.1f} seconds.")
+                    person_event_log.append({
+                        "ID": pid,
+                        "Entry Time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "Exit Time": current_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "Space ID": space_name,
+                        "Total Lingering Time (s)": f"{total_time_in_space:.1f}"
+                    })
+
+        if person_event_log:
+            sorted_log = sorted(person_event_log, key=lambda x: (x['ID'], x.get('Space ID', ''), x['Entry Time']))
+
+            with open(csv_file_name, 'w', newline='') as csvfile:
+                fieldnames = ["ID", "Entry Time", "Exit Time", "Space ID", "Total Lingering Time (s)"]
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+                writer.writeheader()
+                for row in sorted_log:
+                    writer.writerow(row)
+            print(f"Tracking data saved to: {csv_file_name}")
+        else:
+            print("No person events to log to CSV.")
 
 if __name__ == "__main__":
     main()
