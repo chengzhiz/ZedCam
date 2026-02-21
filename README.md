@@ -10,12 +10,11 @@ Total: $519 + $ 1299
 keyboard and mouse, portable monitor, camera stand for Zed Camera
 
 # Code explaination:
-V3: tracking human and lingering time in defined space by drawing the area before recording. Export the following when quitting the program. 
+###  V3: tracking human and lingering time in defined space by drawing the area before recording. Export the following when quitting the program. 
 * CSV with the ID, Entry and Exit time, Lingering duration, Space (A/B/C), 
 * accelerated recorded video
-V4: 
-* Automatically checkpoint saved the video per 30 minutes, progressively save the CSV file per 30 minutes
-V5 (To-do)
+### V4: Automatically checkpoint saved the video per 30 minutes, progressively save the CSV file per 30 minutes
+### V5 (To-do)
 * Debug the lingering time record inaccuracy
 * Better UI
 * "q" for quitting the program
