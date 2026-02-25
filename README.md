@@ -10,7 +10,7 @@ Total: $519 + $ 1299
 keyboard and mouse, portable monitor, tripod for mounting the Zed Camera and get it in place
 
 # Other equipments:
-* No need to have Wifi connection
+* No need for Wifi 
 
 # Version explaination:
 
@@ -27,6 +27,12 @@ Automatically saved the checkpoint video and progressively save the csv file eve
 * "q" for quitting the program
 - sometimes it can still lose track of a person stayingg in the video record area
 
-# Other possible improvements to be done:
+# Other possible improvements:
 * Make texts on the screen more visible 
+* Maybe add line drawing options (not freehand drawing)
+* Maybe color correction
+* 
 
+# What needs to be done after getting the data log:
+* Checking the video if same person coming back with the different ID, consolidate these data 
+* Manually check if the ID switch with the same people, consolidate these data
