@@ -270,7 +270,7 @@ def video_recording_loop(zed, obj_runtime_param, objects, image_mat,
                 time_until_next_checkpoint = CHECKPOINT_INTERVAL - (current_time - last_checkpoint_time)
                 minutes_left = int(time_until_next_checkpoint // 60)
                 seconds_left = int(time_until_next_checkpoint % 60)
-                timer_text = f"Next checkpoint: {minutes_left:02d}:{seconds_left:02d} | Segment: {checkpoint_number}"
+                timer_text = f"Next checkpoint: {minutes_left:02d}:{seconds_left:02d} | Segment: {checkpoint_number} | Time: {current_datetime} "
                 cv2.putText(image, timer_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
                 cv2.imshow("Human Tracking", image)
